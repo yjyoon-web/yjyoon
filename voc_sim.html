@@ -2,7 +2,7 @@
 <html lang="ko">
   <head>
     <meta charset="UTF-8" />
-    <title>VOC 응대 시뮬레이션 (이전/다음 이동 · 재채점 가능 · 30자 미만 BAD)</title>
+    <title>VOC 응대 시뮬레이션 (이전만 보기 · 저장 시 자동 다음 · 잠금)</title>
     <!-- React & ReactDOM (CDN) -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
@@ -22,12 +22,11 @@
       .bubble.cust{background:#fee2e2;border-color:#fecaca}
       .muted{color:var(--muted);font-size:12px}
       textarea{width:100%;padding:10px 12px;border:1px solid #e5e7eb;border-radius:10px;resize:vertical;font-size:14px}
-      .row{display:flex;gap:8px;margin-top:8px} .row>*{flex:1}
+      textarea[disabled]{background:#f9fafb;color:#6b7280}
+      .row{display:flex;gap:8px;margin-top:8px}
       .btn{padding:10px 12px;border-radius:10px;border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer;transition:.15s opacity}
       .btn.secondary{background:#fff;color:#111;border-color:#e5e7eb}
-      .btn.ghost{background:#fff;color:#111;border-color:#e5e7eb;opacity:.85}
-      .btn:hover{opacity:.92}
-      .toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+      .btn:disabled{opacity:.5;cursor:not-allowed}
       .list{list-style:none;padding:0;margin:0;display:grid;gap:10px}
       .chip{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;font-size:12px;border:1px solid #e5e7eb;background:#fff}
       .good{background:#ecfdf5;border-color:#bbf7d0;color:#166534}
@@ -43,6 +42,7 @@
       .dot.answered.good{background:#16a34a;border-color:#16a34a}
       .dot.answered.neutral{background:#f59e0b;border-color:#f59e0b}
       .dot.answered.bad{background:#dc2626;border-color:#dc2626}
+      .dot.disabled{opacity:.35;cursor:not-allowed}
     </style>
   </head>
   <body>
@@ -55,7 +55,7 @@
     </div>
 
     <script type="text/babel">
-      const { useState } = React;
+      const { useState, useEffect } = React;
 
       /* ================== 절대 금지어 (포함 즉시 BAD) ================== */
       const ABSOLUTE_AVOID = [
@@ -186,7 +186,7 @@
           emp.length ? `공감(+${WEIGHT.empathy}) ${emp.map(x=>`"${x}"`).join(", ")}` : null,
           act.length ? `행동(+${WEIGHT.action}) ${act.map(x=>`"${x}"`).join(", ")}` : null,
           ddl.length ? `기한(+${WEIGHT.deadline}) ${ddl.map(x=>`"${x}"`).join(", ")}` : null,
-          clr.length ? `명료성(+${WEIGHT.clarity}) ${clr.map(x=>`"${x}"`).join(", ")}` : null,
+          clr.length ? `명료성(+${WEIGHT.clARITY}) ${clr.map(x=>`"${x}"`).join(", ")}` : null,
           len ? `길이보너스(+${len})` : null,
           (act.length && ddl.length) ? null : "※ GOOD에는 '확인/조치'와 '기한'이 모두 필요"
         ].filter(Boolean).join(" | ");
@@ -199,58 +199,88 @@
         };
       }
 
-      /* ================== 앱 (이전/다음 이동 + 재채점) ================== */
+      /* ================== 앱 (이전만 보기 · 저장 시 자동 다음 · 잠금) ================== */
       function App(){
-        const [idx,setIdx]=useState(0);                                // 현재 시나리오 인덱스
-        const [answers,setAnswers]=useState(Array(SCENARIOS.length).fill(null)); // 각 시나리오의 저장된 답/채점
-        const [freeText,setFreeText]=useState("");                      // 입력창 내용
+        const [answers,setAnswers]=useState(Array(SCENARIOS.length).fill(null)); // 저장된 결과
+        const [idx,setIdx]=useState(0);                                         // 현재 보고있는 인덱스
+        const [freeText,setFreeText]=useState("");                               // 입력값
 
-        // 현재 인덱스 바뀔 때 입력창에 기존 답 로드
-        React.useEffect(()=>{
-          const saved = answers[idx]?.a || "";
-          setFreeText(saved);
-        }, [idx]);
+        // 진행 포인터: 첫 미답 문항 위치(모두 완료면 length)
+        const firstUnanswered = answers.findIndex(a=>!a);
+        const progressPtr = firstUnanswered === -1 ? SCENARIOS.length : firstUnanswered;
 
-        function gradeAndSave(){
-          const result = analyze(freeText);
-          const next = answers.slice();
-          next[idx] = { a: freeText.trim(), ...result };
-          setAnswers(next);
-        }
-
-        function nextScenario(){
-          if(idx < SCENARIOS.length-1) setIdx(idx+1);
-        }
-        function prevScenario(){
-          if(idx > 0) setIdx(idx-1);
-        }
-        function clearAnswer(){
-          setFreeText("");
-        }
-
-        // 점수는 저장된 답 기준으로 실시간 집계
-        const totals = answers.reduce((acc,x)=>{
-          if(!x) return acc;
-          acc[x.label]=(acc[x.label]||0)+1;
-          return acc;
-        }, {good:0,neutral:0,bad:0});
+        // 화면 진입/저장 후: 항상 '현재 진행 문항(미답)'으로 이동
+        useEffect(()=>{
+          setIdx(progressPtr === SCENARIOS.length ? SCENARIOS.length-1 : progressPtr);
+          // 미답이면 입력창 비우고, 저장된 문항을 보고 있을 땐 해당 답을 표시(읽기 전용)
+          if(progressPtr < SCENARIOS.length){
+            setFreeText(""); // 현재 미답
+          }else{
+            setFreeText(answers[SCENARIOS.length-1]?.a || "");
+          }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        }, [progressPtr]);
 
         const scenario = SCENARIOS[idx];
+        const isLocked = !!answers[idx];                // 해당 문항이 이미 저장됐는지
+        const isCurrent = idx === progressPtr;          // 현재 진행(미답) 문항인지
+        const canSave = isCurrent && progressPtr < SCENARIOS.length;
+
+        function saveAndAdvance(){
+          if(!canSave) return;
+          const result = analyze(freeText);
+          const next = answers.slice();
+          next[idx] = { a: freeText.trim(), ...result };  // 저장과 잠금
+          setAnswers(next);
+          setFreeText("");                                // 다음 입력을 위해 비움
+          // 자동 다음(다음 미답으로 스냅)
+          const nextProgress = next.findIndex(a=>!a);
+          if(nextProgress === -1){
+            // 모두 완료
+            alert(`전체 완료!\nGOOD:${next.filter(x=>x?.label==='good').length}  NEUTRAL:${next.filter(x=>x?.label==='neutral').length}  BAD:${next.filter(x=>x?.label==='bad').length}`);
+            setIdx(SCENARIOS.length-1);
+          }else{
+            setIdx(nextProgress);
+          }
+        }
+
+        function prev(){
+          if(idx>0){
+            setIdx(idx-1);
+            setFreeText(answers[idx-1]?.a || ""); // 이전은 보기만(편집불가)
+          }
+        }
+
+        // 상단 점(Dot): 이전/현재까지만 클릭 가능 (미래는 disabled)
+        function Dot({i}){
+          const a = answers[i];
+          const status = a?.label; // good/neutral/bad
+          const active = i===idx;
+          const isFuture = i>progressPtr;     // 미래 문항
+          const clickable = i<=progressPtr;   // 이전/현재만
+          const cls = `dot ${active?'active':''} ${a?`answered ${status}`:''} ${!clickable?'disabled':''}`;
+          return (
+            <div
+              className={cls}
+              title={a?`#${i+1} - ${status.toUpperCase()}`:`#${i+1}${isFuture?' (잠김)':''}`}
+              onClick={()=>{ if(clickable){ setIdx(i); setFreeText(answers[i]?.a || ""); } }}
+            />
+          );
+        }
+
+        // 통계
+        const totals = answers.reduce((acc,x)=>{ if(!x) return acc; acc[x.label]=(acc[x.label]||0)+1; return acc; }, {good:0,neutral:0,bad:0});
 
         return (
           <>
             <div className="panel">
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:'8px',marginBottom:'8px'}}>
                 <div>
-                  <div className="muted">시나리오 {idx+1}/{SCENARIOS.length} · 자유입력</div>
+                  <div className="muted">시나리오 {idx+1}/{SCENARIOS.length} · {isLocked?'잠금(보기만)':'작성 가능'}</div>
                   <h2 style={{margin:'6px 0 0 0'}}>{scenario.title}</h2>
                 </div>
                 <div className="dots">
-                  {SCENARIOS.map((_,i)=>{
-                    const s = answers[i]?.label;
-                    const cls = `dot ${i===idx?'active':''} ${s?`answered ${s}`:''}`;
-                    return <div key={i} className={cls} title={s?`#${i+1} - ${s.toUpperCase()}`:`#${i+1}`}></div>;
-                  })}
+                  {SCENARIOS.map((_,i)=><Dot key={i} i={i} />)}
                 </div>
               </div>
 
@@ -259,13 +289,17 @@
                 {scenario.customer}
               </div>
 
-              <textarea rows="4" value={freeText} onChange={e=>setFreeText(e.target.value)} onKeyDown={e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){e.preventDefault();gradeAndSave();}}} placeholder=""></textarea>
+              <textarea
+                rows="4"
+                value={isLocked ? (answers[idx]?.a || "") : freeText}
+                onChange={e=>!isLocked && setFreeText(e.target.value)}
+                placeholder=""
+                disabled={isLocked}
+              ></textarea>
 
-              <div className="toolbar">
-                <button className="btn secondary" onClick={prevScenario} disabled={idx===0}>← 이전으로</button>
-                <button className="btn" onClick={gradeAndSave}>답변 저장/채점 (Ctrl/⌘+Enter)</button>
-                <button className="btn ghost" onClick={nextScenario} disabled={idx===SCENARIOS.length-1}>다음으로 →</button>
-                <button className="btn ghost" onClick={clearAnswer}>입력 지우기</button>
+              <div className="row">
+                <button className="btn secondary" onClick={prev} disabled={idx===0}>← 이전으로</button>
+                <button className="btn" onClick={saveAndAdvance} disabled={!canSave}>답변 저장/채점</button>
               </div>
             </div>
 
