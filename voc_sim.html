@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <title>VOC 응대 시뮬레이션 (이전만 보기 · 저장 시 자동 다음 · 잠금)</title>
+    <!-- React & ReactDOM (CDN) -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <!-- Babel (for in-browser JSX transform) -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root { --muted:#6b7280; --good:#16a34a; --neutral:#f59e0b; --bad:#dc2626; --card:#fff; --accent:#4f46e5; }
+      body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,'Noto Sans KR','Malgun Gothic',sans-serif;margin:0;background:#f3f4f6;}
+      .container{max-width:1000px;margin:0 auto;padding:24px 16px 64px}
+      .header{display:flex;align-items:end;justify-content:space-between;gap:12px;margin-bottom:16px}
+      h1{margin:0;font-size:24px}
+      .grid{display:grid;grid-template-columns:1fr;gap:16px}
+      @media(min-width:900px){.grid{grid-template-columns:2fr 1fr}}
+      .panel{background:var(--card);border:1px solid #e5e7eb;border-radius:14px;box-shadow:0 4px 18px rgba(0,0,0,.05);padding:16px}
+      .bubble{padding:12px 14px;border:1px solid #e5e7eb;border-radius:12px;background:#fff}
+      .bubble.cust{background:#fee2e2;border-color:#fecaca}
+      .muted{color:var(--muted);font-size:12px}
+      textarea{width:100%;padding:10px 12px;border:1px solid #e5e7eb;border-radius:10px;resize:vertical;font-size:14px}
+      textarea[disabled]{background:#f9fafb;color:#6b7280}
+      .row{display:flex;gap:8px;margin-top:8px}
+      .btn{padding:10px 12px;border-radius:10px;border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer;transition:.15s opacity}
+      .btn.secondary{background:#fff;color:#111;border-color:#e5e7eb}
+      .btn:disabled{opacity:.5;cursor:not-allowed}
+      .list{list-style:none;padding:0;margin:0;display:grid;gap:10px}
+      .chip{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;font-size:12px;border:1px solid #e5e7eb;background:#fff}
+      .good{background:#ecfdf5;border-color:#bbf7d0;color:#166534}
+      .neutral{background:#fffbeb;border-color:#fde68a;color:#92400e}
+      .bad{background:#fff1f2;border-color:#fecaca;color:#991b1b}
+      details{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:8px 10px;margin-top:8px}
+      summary{cursor:pointer;color:#374151;font-size:12px}
+      .kpi{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:6px}
+      .kpi>div{font-size:11px;color:#111827;background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:6px;text-align:center}
+      .dots{display:flex;gap:6px;align-items:center}
+      .dot{width:10px;height:10px;border-radius:999px;background:#e5e7eb;border:1px solid #cbd5e1}
+      .dot.active{background:var(--accent);border-color:var(--accent)}
+      .dot.answered.good{background:#16a34a;border-color:#16a34a}
+      .dot.answered.neutral{background:#f59e0b;border-color:#f59e0b}
+      .dot.answered.bad{background:#dc2626;border-color:#dc2626}
+      .dot.disabled{opacity:.35;cursor:not-allowed}
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>VOC 진상고객 응대 시뮬레이션</h1>
+        <div class="muted">규칙: <b>30자 미만=BAD</b>, <b>GOOD=행동+기한 & 점수≥4</b>, 금지어=즉시 BAD</div>
+      </div>
+      <div id="root" class="grid"></div>
+    </div>
+
+    <script type="text/babel">
+      const { useState, useEffect } = React;
+
+      /* ================== 절대 금지어 (포함 즉시 BAD) ================== */
+      const ABSOLUTE_AVOID = [
+        // 책임 회피/거부
+        "저희 잘못이 아닙니다","규정상 어렵습니다","불가능합니다","그런 일은 없었을 것","확인된 바 없습니다","과도한 요구","무리한 요청",
+        // 고객 비하/의심/부정
+        "오해하고 계신","잘못 아시는","과민반응","억지 주장","이상하게 생각","그럴 리 없는데","그럴리가 없는데","없을 리 없다",
+        // 일방 통보/닫기
+        "이렇게 처리됩니다","규정이니까 따라주세요","더 이상 할 말 없습니다","이미 답변드렸는데",
+        // 감정적 표현
+        "화내실 일 아닌","너무 예민하게","다른 고객들은","이런 식으로 하시면"
+      ];
+
+      /* ================== 시나리오 (풀텍스트) ================== */
+      const SCENARIOS = [
+        {
+          id: "field_abuse_misdelivery",
+          title: "배송기사 욕설 및 오배송 사건 긴급처리 요청",
+          customer: `이런 식으로 고객을 대하는 게 당신들 회사 방침입니까?
+저는 현재 암 투병 중인 환자입니다. 그런데 당신들 배송기사가 저에게 어떻게 했는지 아십니까?
+사건 경위:
+• 주문번호: xxxxxxxxxx
+• 배송기사: 홍○○ (연락처 010--)
+• 발생일시: X월 X일 오후 2시경
+상품이 배송완료 처리됐는데 집에 없어서 기사에게 연락했더니
+“또 보상 타먹으려고 거짓말하는 거 아니냐?”라고 말했습니다. 
+이게 고객에게 할 말입니까?!
+더 가관인 건 집 앞에 와서는 창문으로 집안을 들여다보는 행위까지 했습니다.
+완전히 사생활 침해 아닙니까? 
+엉터리 배송완료 사진까지 찍어놓고는 “분명히 배송했다”고 우겼는데,
+나중에 확인해보니 옆집에서 잘못 받은 거였습니다. 
+그런데도 사과 한 마디 없고 클레임 접수도 거부했습니다.
+제가 암 환자라는 걸 알고도 이런 식으로 대하는 겁니까?
+담당의사가 스트레스 받으면 안 된다고 몇 번을 당부했는데,
+이런 일로 받은 정신적 충격이 얼마나 큰지 아십니까? 
+요구사항:
+1. 해당 배송기사 즉시 징계조치
+2. 정신적 피해에 대한 배상 (최소 100만원)
+3. 본사 책임자 직접 사과
+4. 재발방지 대책 마련
+빠른 시일 내에 성의 있는 답변 없으면 소비자보호원 신고하겠습니다.
+이미 통화내용 녹음해뒀고, 증거자료도 모두 확보한 상태입니다.
+7일 이내 답변 바랍니다.`
+        },
+        {
+          id: "repeat_abuse_compensation",
+          title: "직원응대 불만(재접수) — 욕설 사건 후 미흡한 조치",
+          customer: `당신들이 지금까지 어떻게 처리했는지 정말 어이가 없어서 다시 접수합니다.
+기존 접수번호: VOC-2025-- 
+이미 한 번 신고했던 집하기사 욕설 사건입니다.
+반품 수거 요청했더니 집하기사(이○○, 010--)가 전화로
+“XX같은 고객 때문에 일이 힘들다”며 온갖 욕설을 했습니다. 
+그래서 지점에 신고했더니 1주일 넘게 답변 지연시키더니,
+결국 욕설 사실은 인정하고 기사한테 5만원 벌금만 매겼다고 하네요? 
+이게 끝입니까?  욕 먹은 건 저인데 피해자인 제가 받을 보상은 0원이고,
+가해자는 돈만 내면 끝이라고요?  말이 됩니까 이게? 
+형식적인 사과 전화 한 통으로 모든 게 해결된다고 생각하십니까?
+제가 받은 정신적 충격과 스트레스는 누가 책임집니까?
+재요구사항:
+1. 정신적 피해 위자료 최소 50만원
+2. 해당 기사 징계처분 (벌금 말고 정식 징계)
+3. 욕설 재발방지를 위한 교육시스템 구축
+4. 본사 팀장급 이상 직접 사과
+이번에도 성의 없는 답변 주면 법적 대응하겠습니다.
+통화 녹음 파일 보관하고 있고, 변호사 상담도 이미 받았습니다.
+5일 이내 구체적인 해결방안 제시하십시오.
+아니면 본사 사장님께 직접 탄원서 보내겠습니다.
+더 이상 고객을 우롱하지 마십시오.`
+        }
+      ];
+
+      /* ================== 키워드 & 가중치 ================== */
+      const KW_EMPATHY = ["죄송","사과","불편","이해","유감","심려"];
+      const KW_ACTION  = ["확인","조회","조치","접수","연락드리","에스컬레이션","조사","보상","재교육","분리조치","증거","기록","재발방지","보고"];
+      const KW_DEADLINE = ["오늘","내일","영업일","기한","까지","시","분"]; // GOOD 필수
+      const KW_CLARITY = ["담당자","팀장","본사","절차","방안","기준","단계"];  // 보조
+      const WEIGHT = { empathy: 1, action: 2, deadline: 1, clarity: 1, lengthBonus: 1 };
+
+      /* ================== 유틸 ================== */
+      function normalize(s){ return (s||"").toLowerCase().replace(/\s+/g,"").replace(/[^\p{Letter}\p{Number}]/gu,""); }
+      function hits(raw, arr){
+        const t=(raw||"").toLowerCase(), tn=normalize(raw); const out=[];
+        for(const w of arr){ const wn=normalize(w); if(t.includes(w.toLowerCase())||tn.includes(wn)) out.push(w); }
+        return out;
+      }
+
+      /* ================== 채점(강화판) ================== */
+      function analyze(text){
+        const raw = (text||"").trim();
+        if(!raw) {
+          return {label:"bad",reason:"빈 응답",breakdown:{empathy:0,action:0,deadline:0,clarity:0,length:0,total:0},matched:{}};
+        }
+        // 0) 30자 미만 무조건 BAD
+        if(raw.length < 30){
+          return {label:"bad",reason:"응답 30자 미만 → 자동 BAD",breakdown:{empathy:0,action:0,deadline:0,clarity:0,length:0,total:0},matched:{}};
+        }
+        // 1) 금지어 즉시 BAD
+        const avoid = hits(raw, ABSOLUTE_AVOID);
+        if(avoid.length){
+          return {label:"bad",reason:`절대 금지어 포함: ${avoid.join(", ")} → 즉시 BAD`,breakdown:{empathy:0,action:0,deadline:0,clarity:0,length:0,total:0},matched:{avoid}};
+        }
+        // 2) 매칭
+        const emp = hits(raw, KW_EMPATHY);
+        const act = hits(raw, KW_ACTION);
+        const ddl = hits(raw, KW_DEADLINE);
+        const clr = hits(raw, KW_CLARITY);
+        const len = raw.length >= 40 ? WEIGHT.lengthBonus : 0;
+
+        // 3) 사과만 있는 경우 → BAD
+        if(emp.length && !act.length && !ddl.length){
+          return {label:"bad",reason:"사과만 있고 조치·기한 없음 → BAD",breakdown:{empathy:WEIGHT.empathy,action:0,deadline:0,clarity:0,length:len,total:WEIGHT.empathy+len},matched:{emp}};
+        }
+
+        // 4) 점수 합산 & 등급
+        let score = 0;
+        score += emp.length ? WEIGHT.empathy : 0;
+        score += act.length ? WEIGHT.action  : 0;
+        score += ddl.length ? WEIGHT.deadline : 0;
+        score += clr.length ? WEIGHT.clarity : 0;
+        score += len;
+
+        let label;
+        if(act.length && ddl.length && score >= 4) label = "good";
+        else if(score >= 2) label = "neutral";
+        else label = "bad";
+
+        const reason = [
+          emp.length ? `공감(+${WEIGHT.empathy}) ${emp.map(x=>`"${x}"`).join(", ")}` : null,
+          act.length ? `행동(+${WEIGHT.action}) ${act.map(x=>`"${x}"`).join(", ")}` : null,
+          ddl.length ? `기한(+${WEIGHT.deadline}) ${ddl.map(x=>`"${x}"`).join(", ")}` : null,
+          clr.length ? `명료성(+${WEIGHT.clARITY}) ${clr.map(x=>`"${x}"`).join(", ")}` : null,
+          len ? `길이보너스(+${len})` : null,
+          (act.length && ddl.length) ? null : "※ GOOD에는 '확인/조치'와 '기한'이 모두 필요"
+        ].filter(Boolean).join(" | ");
+
+        return {
+          label,
+          reason,
+          breakdown:{empathy:emp.length?WEIGHT.empathy:0,action:act.length?WEIGHT.action:0,deadline:ddl.length?WEIGHT.deadline:0,clarity:clr.length?WEIGHT.clarity:0,length:len,total:score},
+          matched:{emp,act,ddl,clr}
+        };
+      }
+
+      /* ================== 앱 (이전만 보기 · 저장 시 자동 다음 · 잠금) ================== */
+      function App(){
+        const [answers,setAnswers]=useState(Array(SCENARIOS.length).fill(null)); // 저장된 결과
+        const [idx,setIdx]=useState(0);                                         // 현재 보고있는 인덱스
+        const [freeText,setFreeText]=useState("");                               // 입력값
+
+        // 진행 포인터: 첫 미답 문항 위치(모두 완료면 length)
+        const firstUnanswered = answers.findIndex(a=>!a);
+        const progressPtr = firstUnanswered === -1 ? SCENARIOS.length : firstUnanswered;
+
+        // 화면 진입/저장 후: 항상 '현재 진행 문항(미답)'으로 이동
+        useEffect(()=>{
+          setIdx(progressPtr === SCENARIOS.length ? SCENARIOS.length-1 : progressPtr);
+          // 미답이면 입력창 비우고, 저장된 문항을 보고 있을 땐 해당 답을 표시(읽기 전용)
+          if(progressPtr < SCENARIOS.length){
+            setFreeText(""); // 현재 미답
+          }else{
+            setFreeText(answers[SCENARIOS.length-1]?.a || "");
+          }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        }, [progressPtr]);
+
+        const scenario = SCENARIOS[idx];
+        const isLocked = !!answers[idx];                // 해당 문항이 이미 저장됐는지
+        const isCurrent = idx === progressPtr;          // 현재 진행(미답) 문항인지
+        const canSave = isCurrent && progressPtr < SCENARIOS.length;
+
+        function saveAndAdvance(){
+          if(!canSave) return;
+          const result = analyze(freeText);
+          const next = answers.slice();
+          next[idx] = { a: freeText.trim(), ...result };  // 저장과 잠금
+          setAnswers(next);
+          setFreeText("");                                // 다음 입력을 위해 비움
+          // 자동 다음(다음 미답으로 스냅)
+          const nextProgress = next.findIndex(a=>!a);
+          if(nextProgress === -1){
+            // 모두 완료
+            alert(`전체 완료!\nGOOD:${next.filter(x=>x?.label==='good').length}  NEUTRAL:${next.filter(x=>x?.label==='neutral').length}  BAD:${next.filter(x=>x?.label==='bad').length}`);
+            setIdx(SCENARIOS.length-1);
+          }else{
+            setIdx(nextProgress);
+          }
+        }
+
+        function prev(){
+          if(idx>0){
+            setIdx(idx-1);
+            setFreeText(answers[idx-1]?.a || ""); // 이전은 보기만(편집불가)
+          }
+        }
+
+        // 상단 점(Dot): 이전/현재까지만 클릭 가능 (미래는 disabled)
+        function Dot({i}){
+          const a = answers[i];
+          const status = a?.label; // good/neutral/bad
+          const active = i===idx;
+          const isFuture = i>progressPtr;     // 미래 문항
+          const clickable = i<=progressPtr;   // 이전/현재만
+          const cls = `dot ${active?'active':''} ${a?`answered ${status}`:''} ${!clickable?'disabled':''}`;
+          return (
+            <div
+              className={cls}
+              title={a?`#${i+1} - ${status.toUpperCase()}`:`#${i+1}${isFuture?' (잠김)':''}`}
+              onClick={()=>{ if(clickable){ setIdx(i); setFreeText(answers[i]?.a || ""); } }}
+            />
+          );
+        }
+
+        // 통계
+        const totals = answers.reduce((acc,x)=>{ if(!x) return acc; acc[x.label]=(acc[x.label]||0)+1; return acc; }, {good:0,neutral:0,bad:0});
+
+        return (
+          <>
+            <div className="panel">
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:'8px',marginBottom:'8px'}}>
+                <div>
+                  <div className="muted">시나리오 {idx+1}/{SCENARIOS.length} · {isLocked?'잠금(보기만)':'작성 가능'}</div>
+                  <h2 style={{margin:'6px 0 0 0'}}>{scenario.title}</h2>
+                </div>
+                <div className="dots">
+                  {SCENARIOS.map((_,i)=><Dot key={i} i={i} />)}
+                </div>
+              </div>
+
+              <div className="bubble cust" style={{whiteSpace:'pre-wrap',marginBottom:'10px'}}>
+                <div className="muted" style={{marginBottom:'6px'}}>고객</div>
+                {scenario.customer}
+              </div>
+
+              <textarea
+                rows="4"
+                value={isLocked ? (answers[idx]?.a || "") : freeText}
+                onChange={e=>!isLocked && setFreeText(e.target.value)}
+                placeholder=""
+                disabled={isLocked}
+              ></textarea>
+
+              <div className="row">
+                <button className="btn secondary" onClick={prev} disabled={idx===0}>← 이전으로</button>
+                <button className="btn" onClick={saveAndAdvance} disabled={!canSave}>답변 저장/채점</button>
+              </div>
+            </div>
+
+            <div className="panel">
+              <h3 style={{marginTop:0}}>응답 기록</h3>
+              <div className="muted" style={{marginBottom:'6px'}}>총합 — GOOD: {totals.good||0} · NEUTRAL: {totals.neutral||0} · BAD: {totals.bad||0}</div>
+              {answers.every(x=>!x) ? <div className="muted">아직 저장된 응답이 없습니다.</div> : (
+                <ul className="list">
+                  {answers.map((item,i)=> item && (
+                    <li key={i} className="bubble">
+                      <div style={{display:'flex',justifyContent:'space-between',gap:'12px',alignItems:'center'}}>
+                        <div><b>#{i+1} 나:</b> {item.a}</div>
+                        <span className={`chip ${item.label}`}>{item.label.toUpperCase()}</span>
+                      </div>
+                      <details>
+                        <summary>판정 이유 보기</summary>
+                        <div style={{fontSize:'12px',color:'#374151',lineHeight:1.6, paddingTop:'6px'}}>
+                          <div><b>요약:</b> {item.reason}</div>
+                          <div className="kpi">
+                            <div>공감: {item.breakdown?.empathy||0}</div>
+                            <div>행동: {item.breakdown?.action||0}</div>
+                            <div>기한: {item.breakdown?.deadline||0}</div>
+                            <div>길이: {item.breakdown?.length||0}</div>
+                          </div>
+                          {( (item.matched?.emp?.length||0)+(item.matched?.act?.length||0)+(item.matched?.ddl?.length||0)+(item.matched?.clr?.length||0) )>0 && (
+                            <div style={{marginTop:'6px'}}>
+                              {item.matched?.emp?.length>0 && <div>✅ 공감: <code>{item.matched.emp.join(", ")}</code></div>}
+                              {item.matched?.act?.length>0 && <div>✅ 행동: <code>{item.matched.act.join(", ")}</code></div>}
+                              {item.matched?.ddl?.length>0 && <div>✅ 기한: <code>{item.matched.ddl.join(", ")}</code></div>}
+                              {item.matched?.clr?.length>0 && <div>✅ 명료성: <code>{item.matched.clr.join(", ")}</code></div>}
+                            </div>
+                          )}
+                          <div style={{marginTop:'6px'}}>등급 규칙: <code>30자 미만=BAD</code>, <code>GOOD='행동'+'기한' 포함 & 총점≥4</code>, <code>NEUTRAL=총점≥2</code>, 그 미만=BAD (금지어 포함 시 즉시 BAD)</div>
+                        </div>
+                      </details>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </>
+        );
+      }
+
+      const root = ReactDOM.createRoot(document.getElementById("root"));
+      root.render(<App/>);
+    </script>
+  </body>
+</html>
